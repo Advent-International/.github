@@ -1,0 +1,59 @@
+name: Azure Login
+description: 'Azure Deployment Auth w/SP'
+inputs:
+  subscription:
+    description: 'Deployment Subscription'
+    required: true
+    type: choice
+    options: 
+    - sub-applications-dev
+    - sub-systems-test
+    - sub-networks-test
+    - sub-applications-test
+    - sub-applications-prod
+    - sub-systems-prod
+    - sub-networks-prod
+runs:
+  using: "composite"
+  steps:
+# Verify subscription input
+- name : Verify subscription
+  run : |
+     ALLOWED_SUBSCRIPTIONS="sub-applications-dev sub-systems-test sub-networks-test sub-applications-test sub-applications-prod sub-systems-prod sub-networks-prod"
+     if [[ ! $ALLOWED_SUBSCRIPTIONS =~ (^|[[:space:]])${{ inputs.subscription }}($|[[:space:]]) ]]; then
+       echo "Invalid subscription provided!"
+       exit 1;
+     fi
+  # checkout the repo
+- uses: actions/checkout@master
+- name: Set SP Name Var
+  id: prepare
+  run: echo "deploymentSub=sp-actions-${{ inputs.subscription }}" >> $GITHUB_ENV
+- name: AKV Auth Login
+  uses: Azure/login@v1
+  with:
+    creds: ${{ secrets.CLOUDOPS_AKVAUTH }}
+- name: Get Subscription SP Credentials
+  uses: Azure/get-keyvault-secrets@v1
+  with:
+    keyvault: ${{ secrets.CLOUDOPS_AKV }}
+    secrets: '${{ env.deploymentSub }}'  # comma separated list of secret keys that need to be fetched from the Key Vault 
+  id: akv_get_subsp
+- name: AzCLI Login w/SP
+  uses: Azure/login@v1
+  with:
+    creds: ${{ steps.akv_get_subsp.outputs[env.deploymentSub] }}
+- name: Set Subscription ID Variable
+  uses: azure/CLI@v1
+  with:
+    azcliversion: 2.58.0
+    inlineScript: |
+      sub_ID=`az account show --query id --output tsv`
+      echo $sub_ID
+      echo "ADVENT_SUBSCRIPTION=$(echo $sub_ID)" >> $GITHUB_ENV
+  id: sub-id-variable
+- name: Use the value
+  id: step_two
+  run: |
+    printf '%s\n' "Subscription ID Is $ADVENT_SUBSCRIPTION" # This will output 'yellow'
+    echo "### ${{ inputs.environment }} has been deployed to ${{ inputs.subscription }}  :white_check_mark:" >> $GITHUB_STEP_SUMMARY
