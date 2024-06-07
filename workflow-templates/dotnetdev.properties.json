@@ -1,0 +1,9 @@
+{
+    "name": "Advent .DotNet Build/Release Dev Workflow",
+    "description": "Advent .DotNet Build/Release Dev starter workflow.",
+    "categories": [
+        "continuous-integration",
+        "Automation",
+        "C#"
+    ]
+}

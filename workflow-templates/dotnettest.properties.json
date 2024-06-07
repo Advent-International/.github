@@ -1,0 +1,9 @@
+{
+    "name": "Advent .DotNet Build/Release Test Workflow",
+    "description": "Advent .DotNet Build/Release Test starter workflow.",
+    "categories": [
+        "continuous-integration",
+        "Automation",
+        "C#"
+    ]
+}

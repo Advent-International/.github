@@ -1,0 +1,39 @@
+name: x Test Build Release Pipeline  # Replace x with App name
+run-name: x test build/release by @${{ github.actor }} # Replace x with App name
+on:
+  push:
+    branches:
+      - '*'
+      - '!master'
+env:
+  appName: # Add App name abbreviation here, e.g. iacm, pcap
+  appRegion: # uksouth or eastus2
+jobs:
+  build_release:
+    runs-on: Adv-Gher-Lin2
+    env:
+      workingDirectory: app
+    steps:
+    - name: Azure Login 
+      uses: Advent-International/cloudengineering-actions/azure_auth_test@main
+      with :
+        subscription: "sub-applications-test"
+        akvName: "${{ secrets.CLOUDOPS_AKV }}"
+        akvAuth: "${{ secrets.CLOUDOPS_AKVAUTH }}"
+    - uses: actions/checkout@main
+    - name: Setup .NET Core SDK
+      uses: actions/setup-dotnet@v4.0.0
+      with:
+        # Optional SDK version(s) to use. If not provided, will install global.json version when available. Examples: 2.2.104, 3.1, 3.1.x, 3.x, 6.0.2xx
+        dotnet-version: '6.0.x'
+        # Optional NuGet.config location, if your NuGet.config isn't located in the root of the repo.
+#        config-file: # optional
+    - name: Build project
+      working-directory: ${{ env.workingDirectory }}
+      run: dotnet build --output publish_output --configuration Release
+    - name: Zip build artifact
+      working-directory: ${{ env.workingDirectory }}
+      run: zip -r ${{ github.run_id }}.zip publish_output
+    - name: Release project
+      working-directory: ${{ env.workingDirectory }}
+      run: az functionapp deployment source config-zip -g rg-${{ env.appName }}-${{ env.appRegion }}-test -n func-${{ env.appName }}-${{ env.appRegion }}-test-1 --src ${{ github.run_id }}.zip
