@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - '*'
-      - '!master'
+      - '!main'
 env:
   appName: # Add App name abbreviation here, e.g. iacm, pcap
   appRegion: # uksouth or eastus2
@@ -12,7 +12,7 @@ jobs:
   build_release:
     runs-on: Adv-Gher-Lin2
     env:
-      workingDirectory: app
+      workingDirectory: # Add name of directory with code here
     steps:
     - name: Azure Login 
       uses: Advent-International/cloudengineering-actions/azure_auth_test@main
