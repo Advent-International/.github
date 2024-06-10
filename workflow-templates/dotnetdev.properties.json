@@ -1,0 +1,9 @@
+{
+    "name": "Adv .NET Build/Release Dev",
+    "description": "Adv .NET Build/Release Dev starter workflow.",
+    "categories": [
+        "continuous-integration",
+        "Automation",
+        "C#"
+    ]
+}
