@@ -1,10 +1,7 @@
 name: x Dev Build Release Pipeline  # Replace x with App name
 run-name: x dev build/release by @${{ github.actor }} # Replace x with App name
 on:
-  push:
-    branches:
-      - '*'
-      - '!main'
+  workflow_dispatch:
 env:
   appName: # Add App name abbreviation here, e.g. iacm, pcap
   appRegion: # uksouth or eastus2
