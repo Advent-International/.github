@@ -1,0 +1,9 @@
+{
+    "name": "Adv .NET Build/Release Function App Prod",
+    "description": "Adv .NET Build/Release Function App Prod starter workflow.",
+    "categories": [
+        "continuous-integration",
+        "Automation",
+        "C#"
+    ]
+}
