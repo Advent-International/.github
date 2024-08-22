@@ -12,7 +12,7 @@ jobs:
       workingDirectory: # Add name of directory with code here
     steps:
     - name: Azure Login 
-      uses: Advent-International/cloudengineering-actions/azure_auth_test@main
+      uses: Advent-International/cloudengineering-actions/release_auth_test@main
       with :
         subscription: "sub-applications-test"
         akvName: "${{ secrets.CLOUDOPS_AKV }}"
