@@ -1,0 +1,9 @@
+{
+    "name": "Adv .NET Build/Release Web App Test",
+    "description": "Adv .NET Build/Release Web App Test starter workflow.",
+    "categories": [
+        "continuous-integration",
+        "Automation",
+        "C#"
+    ]
+}
