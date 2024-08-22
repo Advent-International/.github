@@ -1,9 +1,0 @@
-{
-    "name": "Adv .NET Build/Release Test",
-    "description": "Adv .NET Build/Release Test starter workflow.",
-    "categories": [
-        "continuous-integration",
-        "Automation",
-        "C#"
-    ]
-}
