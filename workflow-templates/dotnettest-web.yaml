@@ -30,9 +30,7 @@ jobs:
       run: dotnet build --output publish_output --configuration Release
     - name: Zip build artifact
       working-directory: ${{ env.workingDirectory }}
-      run: |
-        cd publish_output
-        zip -r ${{ github.run_id }}.zip .
+      run: zip -r ${{ github.run_id }}.zip publish_output
     - name: Release project
       working-directory: ${{ env.workingDirectory }}
-      run: az webapp deployment source config-zip -g rg-${{ env.appName }}-${{ env.appRegion }}-test -n app-${{ env.appName }}-${{ env.appRegion }}-test-1 --src publish_output/${{ github.run_id }}.zip
+      run: az webapp deployment source config-zip -g rg-${{ env.appName }}-${{ env.appRegion }}-test -n app-${{ env.appName }}-${{ env.appRegion }}-test-1 --src ${{ github.run_id }}.zip
