@@ -7,7 +7,7 @@ env:
   appRegion: # uksouth or eastus2
 jobs:
   build_release:
-    runs-on: Adv-Gher-Lin2
+    runs-on: adv-linux-eastus2
     env:
       workingDirectory: # Add name of directory with code here
     steps:
@@ -30,7 +30,9 @@ jobs:
       run: dotnet build --output publish_output --configuration Release
     - name: Zip build artifact
       working-directory: ${{ env.workingDirectory }}
-      run: zip -r ${{ github.run_id }}.zip publish_output
+      run: |
+        cd publish_output
+        zip -r ${{ github.run_id }}.zip .
     - name: Release project
       working-directory: ${{ env.workingDirectory }}
-      run: az functionapp deployment source config-zip -g rg-${{ env.appName }}-${{ env.appRegion }}-dev -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 --src ${{ github.run_id }}.zip
+      run: az functionapp deployment source config-zip -g rg-${{ env.appName }}-${{ env.appRegion }}-dev -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 --src publish_output/${{ github.run_id }}.zip

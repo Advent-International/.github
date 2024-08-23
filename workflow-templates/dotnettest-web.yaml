@@ -7,7 +7,7 @@ env:
   appRegion: # uksouth or eastus2
 jobs:
   build_release:
-    runs-on: Adv-Gher-Lin2
+    runs-on: adv-linux-eastus2
     env:
       workingDirectory: # Add name of directory with code here
     steps:
