@@ -1,0 +1,9 @@
+{
+    "name": "Adv Python Build/Release Function App Dev",
+    "description": "Adv Python Build/Release Dev Function App starter workflow with summary reporting.",
+    "categories": [
+      "continuous-integration",
+      "Automation",
+      "Python"
+    ]
+  }
