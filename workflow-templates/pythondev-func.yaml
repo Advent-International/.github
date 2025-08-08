@@ -7,6 +7,7 @@ on:
 env:
   appName:      # Add App name abbreviation here, e.g. repoguardian
   appRegion:    # Azure region, e.g. eastus2
+  appSubscription: # Azure subscription for dev environment, e.g. sub-applications-dev
 
 jobs:
   # 🔍 Optional Best Practice: First detect whether any Python files have changed,
@@ -121,7 +122,7 @@ jobs:
       - name: 🔐 Setup Azure Dev Release Credentials
         uses: Advent-International/cloudengineering-actions/release_auth_dev@main
         with:
-          subscription: "sub-applications-dev"
+          subscription: "${{ env.appSubscription }}"
           akvName: "${{ secrets.CLOUDOPS_AKV }}"
           akvAuth: "${{ secrets.CLOUDOPS_AKVAUTH }}"
 
