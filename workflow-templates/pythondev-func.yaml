@@ -1,0 +1,163 @@
+name: x Python Dev Build Release  # Replace x with App name
+run-name: x dev build/release by @${{ github.actor }}  # Replace x with App name
+
+on:
+  workflow_dispatch:
+
+env:
+  appName:      # Add App name abbreviation here, e.g. repoguardian
+  appRegion:    # Azure region, e.g. eastus2
+  appSubscription: # Azure subscription for dev environment, e.g. sub-applications-dev
+
+jobs:
+  # 🔍 Optional Best Practice: First detect whether any Python files have changed,
+  # then run formatting checks only if changes are detected. 
+  # This can speed up workflows by skipping unnecessary formatting runs.
+  # To disable, comment out the DetectPythonChanges and PythonFormatting jobs
+  # and remove their `needs`/`if` conditions from the BuildAndDeploy job.
+  DetectPythonChanges:
+    runs-on: ubuntu-latest
+    outputs:
+      python_changed: ${{ steps.set-python-changed.outputs.python_changed }}
+      python_files: ${{ steps.set-python-changed.outputs.python_files }}
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔎 Detect Python File Changes
+        id: set-python-changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BEFORE=${{ github.event.pull_request.base.sha }}
+            AFTER=${{ github.event.pull_request.head.sha }}
+          else
+            BEFORE=${{ github.event.before }}
+            AFTER=${{ github.sha }}
+            if [ -z "$BEFORE" ]; then
+              BEFORE="HEAD~1"
+            fi
+          fi
+          echo "Diffing $BEFORE..$AFTER"
+          DIFF=$(git diff --name-only "$BEFORE" "$AFTER" | grep '\.py$' || true)
+          if [ -n "$DIFF" ]; then
+            echo "python_changed=true" >> "$GITHUB_OUTPUT"
+            DIFF_CSV=$(echo "$DIFF" | paste -sd "," -)
+            echo "python_files=$DIFF_CSV" >> "$GITHUB_OUTPUT"
+          else
+            echo "python_changed=false" >> "$GITHUB_OUTPUT"
+            echo "python_files=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 📝 Save Python File Changes to Summary
+        if: steps.set-python-changed.outputs.python_changed == 'true'
+        run: |
+          echo "### 🐍 Python file changes detected:" >> "$GITHUB_STEP_SUMMARY"
+          IFS=',' read -ra FILES <<< "${{ steps.set-python-changed.outputs.python_files }}"
+          for file in "${FILES[@]}"; do
+            echo "- $file" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  PythonFormatting:
+    needs: DetectPythonChanges
+    if: needs.DetectPythonChanges.outputs.python_changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      black_failed: ${{ steps.black-check.outputs.black_failed }}
+      black_files: ${{ steps.black-check.outputs.black_files }}
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install Black Formatter
+        run: |
+          python -m pip install --upgrade pip
+          pip install black
+
+      - name: 🧪 Run Black Formatter Check
+        id: black-check
+        run: |
+          set +e
+          BLACK_OUTPUT=$(black --check . 2>&1)
+          BLACK_EXIT=$?
+          echo "$BLACK_OUTPUT"
+
+          if [ $BLACK_EXIT -ne 0 ]; then
+            echo "black_failed=true" >> "$GITHUB_OUTPUT"
+            # Extract files that would be reformatted (if present in output)
+            echo "$BLACK_OUTPUT" | grep "would reformat" | awk '{print $3}' | xargs > black_files.txt 2>/dev/null || true
+            echo "black_files=$(cat black_files.txt 2>/dev/null)" >> "$GITHUB_OUTPUT"
+            echo "### ❌ Black formatter found issues:" >> "$GITHUB_STEP_SUMMARY"
+            echo "$BLACK_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "black_failed=false" >> "$GITHUB_OUTPUT"
+            echo "black_files=" >> "$GITHUB_OUTPUT"
+            echo "### ✅ Black formatter found no issues." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Don't fail the job; we'll gate deploy based on black_failed
+          exit 0
+
+  BuildAndDeploy:
+    name: Deploy to Azure Function (Dev)
+    needs: [DetectPythonChanges, PythonFormatting]
+    # Deploy if:
+    #  - No Python changes, OR
+    #  - Python changes AND Black passed (black_failed == 'false')
+    if: |
+      needs.DetectPythonChanges.outputs.python_changed == 'false' ||
+      (needs.DetectPythonChanges.outputs.python_changed == 'true' &&
+       needs.PythonFormatting.outputs.black_failed == 'false')
+    runs-on: ubuntu-latest
+    env:
+      workingDirectory: # Add name of directory with code here, e.g. repo_guardian
+
+    steps:
+      - name: 🔐 Setup Azure Dev Release Credentials
+        uses: Advent-International/cloudengineering-actions/release_auth_dev@main
+        with:
+          subscription: "${{ env.appSubscription }}"
+          akvName: "${{ secrets.CLOUDOPS_AKV }}"
+          akvAuth: "${{ secrets.CLOUDOPS_AKVAUTH }}"
+
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install App Dependencies
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📦 Zip Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          zip -r ${{ github.run_id }}.zip .
+
+      # 🚀 Deploy to Azure Function App (Dev)
+      - name: 🚀 Deploy to Azure Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          az functionapp deployment source config-zip \
+            -g rg-${{ env.appName }}-${{ env.appRegion }} \
+            -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 \
+            --src ${{ github.run_id }}.zip
+
+      # 📝 Add deployment result to summary
+      - name: 📝 Add Deployment Success to Summary
+        run: |
+          echo "### 🚀 Deployment successful" >> $GITHUB_STEP_SUMMARY
+          echo "App: \`${{ env.appName }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Region: \`${{ env.appRegion }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed at: $(date -u)" >> $GITHUB_STEP_SUMMARY
