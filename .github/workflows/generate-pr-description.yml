@@ -1,4 +1,4 @@
-name: PR Auto‑Describe
+name: PR Auto-Describe
 on:
   pull_request:
     types: [opened, edited, synchronize]
@@ -17,184 +17,118 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 📝 Retrieve Existing PR Description
-        id: prbody
+      - name: 📝 Extract Links & Screenshots from PR Body
+        id: pr_links
         shell: bash
         env:
-            GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Write the current PR description to a file (empty if none)
+          # Get the raw PR body
           gh pr view ${{ github.event.pull_request.number }} --json body --jq .body > pr_body.md || echo "" > pr_body.md
-          echo "=== pr_body.md head ==="
-          sed -n '1,120p' pr_body.md || true
 
-      - name: 🧾 Generate Diff & File Lists
-        id: diffs
+          python3 - <<'PY'
+          import re, pathlib
+
+          body = pathlib.Path("pr_body.md").read_text(encoding="utf-8", errors="ignore")
+
+          # Markdown links & images
+          md_links = re.findall(r"!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)", body)
+
+          # Raw URLs (http/https only)
+          raw_urls = re.findall(r"https?://[^\s)]+", body)
+
+          # HTML image tags
+          html_imgs = re.findall(r"<img\s+[^>]*src=[\"']([^\"']+)[\"'][^>]*>", body, flags=re.I)
+
+          # Deduplicate while preserving order
+          seen = set()
+          def unique(seq):
+              for x in seq:
+                  if x not in seen:
+                      seen.add(x)
+                      yield x
+
+          results = list(unique(md_links + raw_urls + html_imgs))
+
+          # Save for later steps
+          out_text = "\n".join(results)
+          pathlib.Path("pr_links.txt").write_text(out_text, encoding="utf-8")
+
+          print("=== Extracted Links/Screenshots ===")
+          print(out_text or "(none found)")
+          PY
+
+      - name: 🧾 Build compact PR context
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           git fetch --no-tags --prune origin +refs/heads/*:refs/remotes/origin/*
           BEFORE="${{ github.event.pull_request.base.sha }}"
           AFTER="${{ github.event.pull_request.head.sha }}"
-          echo "Diffing $BEFORE..$AFTER"
 
-          # File lists (status + names)
+          # 1) Names + status
           git diff --name-status "$BEFORE" "$AFTER" > files_status.txt
-          git diff --name-only   "$BEFORE" "$AFTER" > files_only.txt
 
-          #Line Stats Per file
-          git diff --numstat "$BEFORE" "$AFTER" > files_numstat.txt
+          # 2) Hunk headers only: unified=0 + strip patch bodies
+          git diff --unified=0 --minimal --no-color "$BEFORE" "$AFTER" > pr.diff
+          # keep only file headers + @@ hunk headers; drop code lines
+          awk '/^diff --git/ || /^@@/' pr.diff > pr.hunks
 
-          # Patch: full repo diff (all languages)
-          git diff --patch --unified=0 --no-color --diff-filter=ACMRTUXB "$BEFORE" "$AFTER" > pr.all.diff
-          echo "pr.all.diff" > which.diff
+          # 3) Limit size to ≈30KB (way under 8k tokens with your template)
+          awk 'BEGIN{max=30000} {print; size+=length($0)+1; if(size>max){exit}}' pr.hunks > pr.hunks.small
 
-          echo "=== files_status head ==="; sed -n '1,80p' files_status.txt || true
-          echo "=== pr.all.diff head ==="; sed -n '1,160p' pr.all.diff || true
+          {
+            echo "## Files (status)"
+            sed 's/^/ - /' files_status.txt
+            echo
+            echo "## Hunk headers (truncated)"
+            cat pr.hunks.small
+          } > compact_context.md
 
-      - name: 🗂 Create Structured PR Context
-        id: context
-        shell: bash
-        run: |
-            python3 - <<'PY'
-            import json, re, os, sys
-
-            def read(p):
-                try:
-                    with open(p, 'r', encoding='utf-8', errors='replace') as f:
-                        return f.read()
-                except FileNotFoundError:
-                    return ""
-
-            files_status = read("files_status.txt").strip().splitlines()
-            files_only   = read("files_only.txt").strip().splitlines()
-            which_diff   = read("which.diff").strip() or "pr.all.diff"
-            diff_text    = read(which_diff)
-            pr_body      = read("pr_body.md")
-
-            added, changed, removed = [], [], []
-            for line in files_status:
-                # Formats: "A\tpath", "M\tpath", "D\tpath", ...
-                parts = line.split("\t", 1)
-                if len(parts) != 2:
-                    continue
-                status, path = parts
-                if status.startswith("A"): added.append(path)
-                elif status.startswith("M"): changed.append(path)
-                elif status.startswith("D"): removed.append(path)
-                else: changed.append(path)
-
-            numstat = []
-            for line in read("files_numstat.txt").strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) == 3:
-                    added_lines, deleted_lines, path = parts
-                    try:
-                        numstat.append({
-                            "path": path,
-                            "added": int(added_lines),
-                            "deleted": int(deleted_lines)
-                        })
-                    except ValueError:
-                        # handle '-' (binary) or weird entries
-                        numstat.append({
-                            "path": path,
-                            "added": added_lines,
-                            "deleted": deleted_lines
-                        })
-            # Keep the body but cap size for prompt hygiene
-            existing_body = pr_body.strip()
-            if len(existing_body) > 6000:
-                existing_body = existing_body[:6000] + "\n\n<!-- truncated -->"
-
-            ctx = {
-                "files": {
-                    "added": added,
-                    "changed": changed,
-                    "removed": removed,
-                    "all": files_only,
-                },
-                "stats": numstat,
-                "diff_file": which_diff,
-                # Truncate gigantic diffs to keep prompt lean (LLMs perform better with concise context).
-                "diff_head": "\n".join(diff_text.splitlines()[:2000]),
-                "existing_pr_body": existing_body,
-            }
-            
-            with open("context.json", "w", encoding="utf-8") as f:
-                json.dump(ctx, f, indent=2)
-            print("Wrote context.json with keys:", list(ctx.keys()))
-            PY
-            echo "=== context.json head ==="
-            sed -n '1,120p' context.json || true
+          wc -c compact_context.md
 
       - name: 🧩 Assemble AI Prompt
-        id: prompt
-        shell: bash
         run: |
-            cat > prompt.txt <<'EOF'
-            You are a release-notes assistant. Use ONLY the information in CONTEXT, EXISTING PR BODY, and DIFF to produce a PR description.
-            Be concise and HIGH-LEVEL. Prefer themes over file enumerations. Do not invent features.
-            If a section has nothing, leave it blank. Include at least one exact filename if relevant.
+          cat > final_prompt.md <<'EOF'
+          You are a release-notes assistant. Use ONLY the compact context below and produce a PR description.
 
-            Merge rules:
-            - Preserve any screenshots/images or links from the EXISTING PR BODY; include them under the most relevant section (Testing or Links).
-            - If the EXISTING PR BODY includes manual testing steps/results, integrate them into the **🧪 Testing** section verbatim (lightly edited for clarity).
-            - If the EXISTING PR BODY includes checklists, summarize only completed/important items.
-            - Do not delete important author notes; carry them forward concisely.
+          ## ✨ Summary
+          (1–3 sentences: what & why)
 
-            ## ✨ Summary
-            <!-- 1–3 sentences: what & why (from context/diff only) -->
+          ## 🔄 Changes
+          - **Added**:
+          - **Changed**:
+          - **Fixed**:
+          - **Removed**:
 
-            ## 🔄 Changes
-            - **Added**:
-            - **Changed**:
-            - **Fixed**:
-            - **Removed**:
+          ## 🧪 Testing
+          (manual/auto steps found; else blank)
 
-            ## 🧪 Testing
-            <!-- Leave as-is if none are certain -->
+          ## 📎 Links
+          (issues/PRs/docs; else blank)
 
-            ## 📎 Links
-            <!-- Leave as-is if none are certain -->
+          --- COMPACT CONTEXT START ---
+          EOF
+          
+          # Add compact context first
+          cat compact_context.md >> final_prompt.md
 
-            --- CONTEXT (JSON) START ---
-            EOF
+          # Append extracted links/screenshots (from pr_links.txt step)
+          echo "" >> final_prompt.md
+          echo "--- EXTRACTED LINKS & SCREENSHOTS ---" >> final_prompt.md
+          cat pr_links.txt >> final_prompt.md
 
-            cat context.json >> prompt.txt
-            cat >> prompt.txt <<'EOF'
-
-            --- CONTEXT (JSON) END ---
-            --- EXISTING PR BODY START ---
-            EOF
-
-            cat pr_body.md >> prompt.txt || true
-            cat >> prompt.txt <<'EOF'
-
-            --- EXISTING PR BODY END ---
-            --- DIFF START ---
-            EOF
-            
-            # Append compact diff head (already capped in context.json; include raw too)
-            DIFF_FILE="$(cat which.diff)"
-            sed -n '1,800p' "$DIFF_FILE" >> prompt.txt
-            echo '--- DIFF END ---' >> prompt.txt
-
-            echo "=== prompt.txt head ==="
-            sed -n '1,160p' prompt.txt || true
+          # Close out the context block
+          echo '--- COMPACT CONTEXT END ---' >> final_prompt.md
 
       - name: 🤖 Draft PR Description
         id: ai
-        uses: actions/ai-inference@v1
+        uses: actions/ai-inference@v1.2.8
         with:
-          model: openai/gpt-4o-mini
-          system-prompt: |
-            You are a release-notes assistant. Be precise and grounded in provided context only.
-          prompt-file: prompt.txt
-          max-tokens: 1400
-          # Optional: enable GitHub MCP tools if your org allows it:
-          enable-github-mcp: false
-          github-mcp-token: ${{ github.token }}
+          model: openai/gpt-4o-mini         # 8k context is fine now
+          prompt-file: final_prompt.md
+          max-tokens: 700
+          enable-github-mcp: false 
 
       - name: 📤 Update PR Description on GitHub
         shell: bash
