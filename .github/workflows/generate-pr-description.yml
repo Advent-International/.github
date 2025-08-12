@@ -1,0 +1,211 @@
+name: PR Auto‑Describe
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  models: read
+
+jobs:
+  generate-pr-description:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Pull Repository Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 📝 Retrieve Existing PR Description
+        id: prbody
+        shell: bash
+        env:
+            GH_TOKEN: ${{ github.token }}
+        run: |
+          # Write the current PR description to a file (empty if none)
+          gh pr view ${{ github.event.pull_request.number }} --json body --jq .body > pr_body.md || echo "" > pr_body.md
+          echo "=== pr_body.md head ==="
+          sed -n '1,120p' pr_body.md || true
+
+      - name: 🧾 Generate Diff & File Lists
+        id: diffs
+        shell: bash
+        run: |
+          set -e
+          git fetch --no-tags --prune origin +refs/heads/*:refs/remotes/origin/*
+          BEFORE="${{ github.event.pull_request.base.sha }}"
+          AFTER="${{ github.event.pull_request.head.sha }}"
+          echo "Diffing $BEFORE..$AFTER"
+
+          # File lists (status + names)
+          git diff --name-status "$BEFORE" "$AFTER" > files_status.txt
+          git diff --name-only   "$BEFORE" "$AFTER" > files_only.txt
+
+          #Line Stats Per file
+          git diff --numstat "$BEFORE" "$AFTER" > files_numstat.txt
+
+          # Patch: full repo diff (all languages)
+          git diff --patch --unified=0 --no-color --diff-filter=ACMRTUXB "$BEFORE" "$AFTER" > pr.all.diff
+          echo "pr.all.diff" > which.diff
+
+          echo "=== files_status head ==="; sed -n '1,80p' files_status.txt || true
+          echo "=== pr.all.diff head ==="; sed -n '1,160p' pr.all.diff || true
+
+      - name: 🗂 Create Structured PR Context
+        id: context
+        shell: bash
+        run: |
+            python3 - <<'PY'
+            import json, re, os, sys
+
+            def read(p):
+                try:
+                    with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                        return f.read()
+                except FileNotFoundError:
+                    return ""
+
+            files_status = read("files_status.txt").strip().splitlines()
+            files_only   = read("files_only.txt").strip().splitlines()
+            which_diff   = read("which.diff").strip() or "pr.all.diff"
+            diff_text    = read(which_diff)
+            pr_body      = read("pr_body.md")
+
+            added, changed, removed = [], [], []
+            for line in files_status:
+                # Formats: "A\tpath", "M\tpath", "D\tpath", ...
+                parts = line.split("\t", 1)
+                if len(parts) != 2:
+                    continue
+                status, path = parts
+                if status.startswith("A"): added.append(path)
+                elif status.startswith("M"): changed.append(path)
+                elif status.startswith("D"): removed.append(path)
+                else: changed.append(path)
+
+            numstat = []
+            for line in read("files_numstat.txt").strip().splitlines():
+                parts = line.split("\t")
+                if len(parts) == 3:
+                    added_lines, deleted_lines, path = parts
+                    try:
+                        numstat.append({
+                            "path": path,
+                            "added": int(added_lines),
+                            "deleted": int(deleted_lines)
+                        })
+                    except ValueError:
+                        # handle '-' (binary) or weird entries
+                        numstat.append({
+                            "path": path,
+                            "added": added_lines,
+                            "deleted": deleted_lines
+                        })
+            # Keep the body but cap size for prompt hygiene
+            existing_body = pr_body.strip()
+            if len(existing_body) > 6000:
+                existing_body = existing_body[:6000] + "\n\n<!-- truncated -->"
+
+            ctx = {
+                "files": {
+                    "added": added,
+                    "changed": changed,
+                    "removed": removed,
+                    "all": files_only,
+                },
+                "stats": numstat,
+                "diff_file": which_diff,
+                # Truncate gigantic diffs to keep prompt lean (LLMs perform better with concise context).
+                "diff_head": "\n".join(diff_text.splitlines()[:2000]),
+                "existing_pr_body": existing_body,
+            }
+            
+            with open("context.json", "w", encoding="utf-8") as f:
+                json.dump(ctx, f, indent=2)
+            print("Wrote context.json with keys:", list(ctx.keys()))
+            PY
+            echo "=== context.json head ==="
+            sed -n '1,120p' context.json || true
+
+      - name: 🧩 Assemble AI Prompt
+        id: prompt
+        shell: bash
+        run: |
+            cat > prompt.txt <<'EOF'
+            You are a release-notes assistant. Use ONLY the information in CONTEXT, EXISTING PR BODY, and DIFF to produce a PR description.
+            Be concise and HIGH-LEVEL. Prefer themes over file enumerations. Do not invent features.
+            If a section has nothing, leave it blank. Include at least one exact filename if relevant.
+
+            Merge rules:
+            - Preserve any screenshots/images or links from the EXISTING PR BODY; include them under the most relevant section (Testing or Links).
+            - If the EXISTING PR BODY includes manual testing steps/results, integrate them into the **🧪 Testing** section verbatim (lightly edited for clarity).
+            - If the EXISTING PR BODY includes checklists, summarize only completed/important items.
+            - Do not delete important author notes; carry them forward concisely.
+
+            ## ✨ Summary
+            <!-- 1–3 sentences: what & why (from context/diff only) -->
+
+            ## 🔄 Changes
+            - **Added**:
+            - **Changed**:
+            - **Fixed**:
+            - **Removed**:
+
+            ## 🧪 Testing
+            <!-- Leave as-is if none are certain -->
+
+            ## 📎 Links
+            <!-- Leave as-is if none are certain -->
+
+            --- CONTEXT (JSON) START ---
+            EOF
+
+            cat context.json >> prompt.txt
+            cat >> prompt.txt <<'EOF'
+
+            --- CONTEXT (JSON) END ---
+            --- EXISTING PR BODY START ---
+            EOF
+
+            cat pr_body.md >> prompt.txt || true
+            cat >> prompt.txt <<'EOF'
+
+            --- EXISTING PR BODY END ---
+            --- DIFF START ---
+            EOF
+            
+            # Append compact diff head (already capped in context.json; include raw too)
+            DIFF_FILE="$(cat which.diff)"
+            sed -n '1,800p' "$DIFF_FILE" >> prompt.txt
+            echo '--- DIFF END ---' >> prompt.txt
+
+            echo "=== prompt.txt head ==="
+            sed -n '1,160p' prompt.txt || true
+
+      - name: 🤖 Draft PR Description
+        id: ai
+        uses: actions/ai-inference@v1
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: |
+            You are a release-notes assistant. Be precise and grounded in provided context only.
+          prompt-file: prompt.txt
+          max-tokens: 1400
+          # Optional: enable GitHub MCP tools if your org allows it:
+          enable-github-mcp: false
+          github-mcp-token: ${{ github.token }}
+
+      - name: 📤 Update PR Description on GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY_FILE="${{ steps.ai.outputs.response-file }}"
+          if [ -z "$BODY_FILE" ] || [ ! -f "$BODY_FILE" ]; then
+            echo "${{ steps.ai.outputs.response }}" > pr.md
+            BODY_FILE=pr.md
+          fi
+          echo "=== model output head ==="
+          sed -n '1,120p' "$BODY_FILE" || true
+          gh pr edit ${{ github.event.pull_request.number }} --body-file "$BODY_FILE"
