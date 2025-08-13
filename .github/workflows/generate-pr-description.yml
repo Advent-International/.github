@@ -91,7 +91,16 @@ jobs:
         run: |
           cat > final_prompt.md <<'EOF'
           You are a release-notes assistant. Use ONLY the compact context below and produce a PR description.
-
+          RULES:
+          - In **Summary**, mention the overall intent using commit subjects if present, and cite at least **2 exact filenames** verbatim.
+          - Populate a section **only if there is clear evidence**:
+            - **Added**: a new file appears (status A) or commit subjects explicitly say “add…”.
+            - **Removed**: a file is deleted (status D) or commit subjects say “remove…/delete…”.
+            - **Fixed**: commit subjects say “fix/bug/patch” or hunks indicate obvious bugfix.
+            - **Changed**: default bucket for edits; safe to use if none of the above apply.
+          - If only docs or workflows changed, describe it as maintenance/update, not a feature.
+          - Do **not** invent items. Omit any section that would be empty.
+          - Keep bullets concise. Never paste raw patches.
           ## ✨ Summary
           (1–3 sentences: what & why)
 
