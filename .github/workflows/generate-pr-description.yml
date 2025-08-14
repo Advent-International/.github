@@ -66,43 +66,111 @@ jobs:
           BEFORE="${{ github.event.pull_request.base.sha }}"
           AFTER="${{ github.event.pull_request.head.sha }}"
 
+          # 0) Commit subjects (first line only), newest first, capped
+          git log --no-merges --format='%s' "$BEFORE..$AFTER" | nl -ba | sed -n '1,40p' > commit_subjects.txt
+
           # 1) Names + status
           git diff --name-status "$BEFORE" "$AFTER" > files_status.txt
 
-          # 2) Hunk headers only: unified=0 + strip patch bodies
+          # 1b) Per-file adds/deletes (size signal)
+          git diff --numstat "$BEFORE" "$AFTER" > files_numstat.txt
+
+          # 1c) Directory/component impact summary (percent-of-churn)
+          git diff --dirstat=files,0 "$BEFORE" "$AFTER" > dirstat.txt
+
+          # 2) Hunk headers only (function names often appear here)
           git diff --unified=0 --minimal --no-color "$BEFORE" "$AFTER" > pr.diff
-          # keep only file headers + @@ hunk headers; drop code lines
           awk '/^diff --git/ || /^@@/' pr.diff > pr.hunks
 
-          # 3) Limit size to ≈30KB (way under 8k tokens with your template)
+          # Extract probable function/method/section names from hunk headers
+          # Examples: "@@ -10,7 +10,8 @@ def fetch_data(...)" or "function foo("
+          awk '
+            /^@@/ {
+              line=$0
+              # strip leading @@ hunks
+              gsub(/^@@[^@]*@@[[:space:]]*/, "", line)
+              # keep a short tail (<=120 chars)
+              if (length(line)>120) line=substr(line,1,120)
+              if (line!="") print "- " line
+            }
+          ' pr.hunks | sed -n '1,80p' > hunk_symbols.txt
+
+          # 3) Size limit on hunk headers for context (≈30KB)
           awk 'BEGIN{max=30000} {print; size+=length($0)+1; if(size>max){exit}}' pr.hunks > pr.hunks.small
 
+          # 4) Simple “tests/config/docs/workflows” detectors
+          grep -Ei '\b(test|spec)\b|(^|/)tests?/' -n files_status.txt | sed 's/^/ - /' > tests_touched.txt || true
+          grep -Ei '\.ya?ml$|\.json$|package(-lock)?\.json|requirements\.txt|pyproject\.toml|pom\.xml|\.github\/workflows\/' files_status.txt | sed 's/^/ - /' > config_touched.txt || true
+          grep -Ei '(^|\/)(docs?|documentation|README\.md)$|\.md$' files_status.txt | sed 's/^/ - /' > docs_touched.txt || true
+          grep -Ei '^A\s' files_status.txt | sed 's/^/ - /' > added_files.txt || true
+          grep -Ei '^D\s' files_status.txt | sed 's/^/ - /' > removed_files.txt || true
+
+          # 5) Breaking change hints (footer text or commit body)
+          git log --no-merges --format='%b' "$BEFORE..$AFTER" | grep -i 'BREAKING CHANGE' -n | sed 's/^/ - /' > breaking_hints.txt || true
+
           {
+            echo "## Commits (subjects, newest first, capped)"
+            sed 's/^/ - /' commit_subjects.txt
+            echo
             echo "## Files (status)"
             sed 's/^/ - /' files_status.txt
+            echo
+            echo "## Files (adds  deletes)"
+            # show top 40 by churn; columns: added deleted path
+            awk '{print $1 "\t" $2 "\t" $3}' files_numstat.txt | sort -k1,1nr -k2,2nr | sed -n '1,40p' | sed 's/^/ - /'
+            echo
+            echo "## Components touched (dirstat)"
+            sed 's/^/ - /' dirstat.txt
+            echo
+            echo "## Hunk symbols (functions/sections, capped)"
+            cat hunk_symbols.txt
+            echo
+            echo "## Tests touched"
+            cat tests_touched.txt 2>/dev/null || true
+            echo
+            echo "## Config/Workflows/Deps touched"
+            cat config_touched.txt 2>/dev/null || true
+            echo
+            echo "## Docs touched"
+            cat docs_touched.txt 2>/dev/null || true
+            echo
+            echo "## Added files (quick scan)"
+            sed -n '1,40p' added_files.txt 2>/dev/null || true
+            echo
+            echo "## Removed files (quick scan)"
+            sed -n '1,40p' removed_files.txt 2>/dev/null || true
+            echo
+            echo "## Breaking-change hints"
+            cat breaking_hints.txt 2>/dev/null || true
             echo
             echo "## Hunk headers (truncated)"
             cat pr.hunks.small
           } > compact_context.md
 
           wc -c compact_context.md
-
+  
       - name: 🧩 Assemble AI Prompt
         run: |
           cat > final_prompt.md <<'EOF'
           You are a release-notes assistant. Use ONLY the compact context below and produce a PR description.
+
           RULES:
           - In **Summary**, mention the overall intent using commit subjects if present, and cite at least **2 exact filenames** verbatim.
+          - Prefer component names from **Components touched (dirstat)**.
+          - Call out notable functions/methods if present in **Hunk symbols**.
+          - If a file shows large churn in **Files (adds  deletes)**, note it briefly.
           - Populate a section **only if there is clear evidence**:
-            - **Added**: a new file appears (status A) or commit subjects explicitly say “add…”.
-            - **Removed**: a file is deleted (status D) or commit subjects say “remove…/delete…”.
+            - **Added**: status A or commit subjects say “add…”.
+            - **Removed**: status D or commit subjects say “remove…/delete…”.
             - **Fixed**: commit subjects say “fix/bug/patch” or hunks indicate obvious bugfix.
             - **Changed**: default bucket for edits; safe to use if none of the above apply.
-          - If only docs or workflows changed, describe it as maintenance/update, not a feature.
-          - Do **not** invent items. Omit any section that would be empty.
-          - Keep bullets concise. Never paste raw patches.
+          - If only docs/config/workflows changed (see **Docs touched** / **Config/Workflows/Deps touched**), frame as maintenance.
+          - If **Breaking-change hints** exist, include a one-line **⚠️ Breaking** note.
+          - Do **not** invent items. Omit empty sections.
+          - Keep bullets concise (≤1 line each). Never paste raw patches.
+
           ## ✨ Summary
-          (1–3 sentences: what & why)
+          (2–4 sentences: what & why; mention 1–2 components and 2+ filenames)
 
           ## 🔄 Changes
           - **Added**:
@@ -111,23 +179,18 @@ jobs:
           - **Removed**:
 
           ## 🧪 Testing
-          (manual/auto steps found; else blank)
+          (Mention tests touched if any; otherwise 1 line on how to validate)
 
           ## 📎 Links
           (issues/PRs/docs; else blank)
 
           --- COMPACT CONTEXT START ---
           EOF
-          
-          # Add compact context first
-          cat compact_context.md >> final_prompt.md
 
-          # Append extracted links/screenshots (from pr_links.txt step)
+          cat compact_context.md >> final_prompt.md
           echo "" >> final_prompt.md
           echo "--- EXTRACTED LINKS & SCREENSHOTS ---" >> final_prompt.md
-          cat pr_links.txt >> final_prompt.md
-
-          # Close out the context block
+          cat pr_links.txt >> final_prompt.md || true
           echo '--- COMPACT CONTEXT END ---' >> final_prompt.md
 
       - name: 🤖 Draft PR Description
