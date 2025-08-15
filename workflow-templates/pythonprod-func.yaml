@@ -18,7 +18,7 @@ on:
 env:
   appName:      # Add App name abbreviation here, e.g. repoguardian
   appRegion:    # Azure region, e.g. eastus2
-  appSubscription: # Azure subscription for dev environment, e.g. sub-applications-dev
+  appSubscription: # Azure subscription for prod environment, e.g. sub-applications-prod
 
 jobs:
   # 🔍 Optional Best Practice: First detect whether any Python files have changed,
@@ -155,7 +155,7 @@ jobs:
         run: |
           npm install -g azure-functions-core-tools@4 --unsafe-perm true
 
-      # 🚀 Deploy to Azure Function App (Dev)
+      # 🚀 Deploy to Azure Function App (Prod)
       - name: 🚀 Deploy to Azure Function App
         working-directory: ${{ env.workingDirectory }}
         run: |
