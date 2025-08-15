@@ -1,6 +1,7 @@
 {
     "name": "Adv .NET Build/Release Function App Dev",
     "description": "Adv .NET Build/Release Dev Function App starter workflow.",
+    "iconName": "dotnet",
     "categories": [
         "continuous-integration",
         "Automation",
