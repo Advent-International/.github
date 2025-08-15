@@ -1,0 +1,10 @@
+{
+    "name": "Adv Python Build/Release Function App Test",
+    "description": "Adv Python Build/Release Test Function App starter workflow with summary reporting.",
+    "iconName": "python",
+    "categories": [
+      "continuous-integration",
+      "Automation",
+      "Python"
+    ]
+  }
