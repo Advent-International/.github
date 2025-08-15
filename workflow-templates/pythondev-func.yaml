@@ -3,6 +3,17 @@ run-name: x dev build/release by @${{ github.actor }}  # Replace x with App name
 
 on:
   workflow_dispatch:
+  # Optional auto triggers (uncomment to enable)
+  # Use paths if repo has multiple function app folders; adjust folder name
+  # If you have ONLY ONE function app folder, DELETE the paths blocks below entirely.
+  # push:
+  #   branches: [ main ]
+  #   # paths:
+  #   #   - 'code-dir/**'
+  # pull_request:
+  #   branches: [ main ]
+  #   # paths:
+  #   #   - 'code-dir/**'
 
 env:
   appName:      # Add App name abbreviation here, e.g. repoguardian
@@ -40,7 +51,7 @@ jobs:
             fi
           fi
           echo "Diffing $BEFORE..$AFTER"
-          DIFF=$(git diff --name-only "$BEFORE" "$AFTER" | grep '\.py$' || true)
+          DIFF=$(git diff --name-only "$BEFORE" "$AFTER" | grep -E '\.py$' || true)
           if [ -n "$DIFF" ]; then
             echo "python_changed=true" >> "$GITHUB_OUTPUT"
             DIFF_CSV=$(echo "$DIFF" | paste -sd "," -)
@@ -140,19 +151,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📦 Zip Function App
-        working-directory: ${{ env.workingDirectory }}
+      - name: 📦 Install Azure Functions Core Tools
         run: |
-          zip -r ${{ github.run_id }}.zip .
+          npm install -g azure-functions-core-tools@4 --unsafe-perm true
 
       # 🚀 Deploy to Azure Function App (Dev)
       - name: 🚀 Deploy to Azure Function App
         working-directory: ${{ env.workingDirectory }}
         run: |
-          az functionapp deployment source config-zip \
-            -g rg-${{ env.appName }}-${{ env.appRegion }}-dev \
-            -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 \
-            --src ${{ github.run_id }}.zip
+          func azure functionapp publish func-${{ env.appName }}-${{ env.appRegion }}-dev-1 --python
 
       # 📝 Add deployment result to summary
       - name: 📝 Add Deployment Success to Summary
