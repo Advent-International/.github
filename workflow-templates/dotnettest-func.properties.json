@@ -1,6 +1,7 @@
 {
     "name": "Adv .NET Build/Release Function App Test",
     "description": "Adv .NET Build/Release Function App Test starter workflow.",
+    "iconName": "dotnet",
     "categories": [
         "continuous-integration",
         "Automation",
