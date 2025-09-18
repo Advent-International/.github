@@ -151,15 +151,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📦 Install Azure Functions Core Tools
+      - name: 📦 Zip Function App
+        working-directory: ${{ env.workingDirectory }}
         run: |
-          npm install -g azure-functions-core-tools@4 --unsafe-perm true
+          zip -r ${{ github.run_id }}.zip .
 
-      # 🚀 Deploy to Azure Function App (Prod)
+      # 🚀 Deploy to Azure Function App (Dev)
       - name: 🚀 Deploy to Azure Function App
         working-directory: ${{ env.workingDirectory }}
         run: |
-          func azure functionapp publish func-${{ env.appName }}-${{ env.appRegion }}-prod-1 --python
+          az functionapp deployment source config-zip \
+            -g rg-${{ env.appName }}-${{ env.appRegion }} \
+            -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 \
+            --src ${{ github.run_id }}.zip
 
       # 📝 Add deployment result to summary
       - name: 📝 Add Deployment Success to Summary
