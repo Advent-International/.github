@@ -1,0 +1,11 @@
+{
+  "name": "Adv Node.js Build/Release Web App Dev",
+  "description": "Adv Node.js Build/Release Dev Web App starter workflow with summary reporting.",
+  "iconName": "nodejs",
+  "categories": [
+    "continuous-integration",
+    "Automation",
+    "JavaScript"
+  ]
+}
+
