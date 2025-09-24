@@ -1,0 +1,251 @@
+name: x Node.js Test Build Release  # Replace x with App name
+run-name: x test build/release by @${{ github.actor }}  # Replace x with App name
+
+on:
+  workflow_dispatch:
+  # Optional auto triggers (uncomment to enable)
+  # Use paths if repo has multiple function app folders; adjust folder name
+  # If you have ONLY ONE function app folder, DELETE the paths blocks below entirely.
+  # push:
+  #   branches: [ main ]
+  #   # paths:
+  #   #   - 'code-dir/**'
+  # pull_request:
+  #   branches: [ main ]
+  #   # paths:
+  #   #   - 'code-dir/**'
+
+env:
+  appName:  # Add App name abbreviation here, e.g. repoguardian
+  appRegion:  # Azure region, e.g. eastus2
+  appSubscription:  # Azure subscription for dev environment, e.g. sub-applications-dev
+  nodeVersion: # Node.js version (18.x or 20.x recommended for Azure Functions v4)
+  workingDirectory:  # app code directory
+
+jobs:
+  # 🔍 Optional Best Practice: First detect whether any JavaScript/TypeScript files have changed,
+  # then run linting/formatting
+  # To disable, comment out the DetectNodeChanges and NodeFormatting jobs
+  DetectNodeChanges:
+    runs-on: ubuntu-latest
+    outputs:
+      node_changed: ${{ steps.set-node-changed.outputs.node_changed }}
+      node_files: ${{ steps.set-node-changed.outputs.node_files }}
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔎 Detect Node.js File Changes
+        id: set-node-changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BEFORE=${{ github.event.pull_request.base.sha }}
+            AFTER=${{ github.event.pull_request.head.sha }}
+          else
+            BEFORE=${{ github.event.before }}
+            AFTER=${{ github.sha }}
+            if [ -z "$BEFORE" ]; then
+              BEFORE="HEAD~1"
+            fi
+          fi
+          echo "Diffing $BEFORE..$AFTER"
+          DIFF=$(git diff --name-only "$BEFORE" "$AFTER" | grep -E '\.(js|jsx|ts|tsx|mjs|cjs)$' || true)
+          if [ -n "$DIFF" ]; then
+            echo "node_changed=true" >> "$GITHUB_OUTPUT"
+            DIFF_CSV=$(echo "$DIFF" | paste -sd "," -)
+            echo "node_files=$DIFF_CSV" >> "$GITHUB_OUTPUT"
+          else
+            echo "node_changed=false" >> "$GITHUB_OUTPUT"
+            echo "node_files=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 📝 Save Node.js File Changes to Summary
+        if: steps.set-node-changed.outputs.node_changed == 'true'
+        run: |
+          echo "### 🟢 Node.js file changes detected:" >> "$GITHUB_STEP_SUMMARY"
+          IFS=',' read -ra FILES <<< "${{ steps.set-node-changed.outputs.node_files }}"
+          for file in "${FILES[@]}"; do
+            echo "- $file" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  NodeFormatting:
+    needs: DetectNodeChanges
+    runs-on: ubuntu-latest
+    outputs:
+      format_failed: ${{ steps.prettier-check.outputs.format_failed }}
+      format_output: ${{ steps.prettier-check.outputs.format_output }}
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔎 Check for package-lock.json
+        id: lockfile-check
+        run: |
+          if [ -f "${{ env.workingDirectory }}/package-lock.json" ]; then
+            echo "has_lockfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_lockfile=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🟢 Set up Node.js (with cache)
+        if: steps.lockfile-check.outputs.has_lockfile == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.nodeVersion }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.workingDirectory }}/package-lock.json
+
+      - name: 🟢 Set up Node.js
+        if: steps.lockfile-check.outputs.has_lockfile != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.nodeVersion }}
+
+      - name: 📦 Install Dependencies (ci)
+        if: steps.lockfile-check.outputs.has_lockfile == 'true'
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          npm ci
+
+      - name: 📦 Install Dependencies
+        if: steps.lockfile-check.outputs.has_lockfile != 'true'
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          npm install
+
+      - name: 🧹 Run Prettier Check
+        id: prettier-check
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          set +e
+          # Run Prettier in check mode on the app directory
+          PRETTIER_OUTPUT=$(npx prettier --check . 2>&1)
+          PRETTIER_EXIT=$?
+
+          if [ $PRETTIER_EXIT -ne 0 ]; then
+            echo "format_failed=true" >> "$GITHUB_OUTPUT"
+            echo "### ❌ Prettier formatting issues found:" >> "$GITHUB_STEP_SUMMARY"
+            echo "$PRETTIER_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+            echo "format_output<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$PRETTIER_OUTPUT" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "format_failed=false" >> "$GITHUB_OUTPUT"
+            echo "format_output=" >> "$GITHUB_OUTPUT"
+            echo "### ✅ Prettier check passed (no changes needed)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Don't fail the job; we'll gate deploy based on format_failed
+          exit 0
+
+  BuildAndDeploy:
+    name: Deploy to Azure Function (Dev)
+    needs: [NodeFormatting]
+    # Deploy only if Prettier passes
+    if: needs.NodeFormatting.outputs.format_failed == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔐 Setup Azure Dev Release Credentials
+        uses: Advent-International/cloudengineering-actions/release_auth_test@main
+        with:
+          subscription: "${{ env.appSubscription }}"
+          akvName: "${{ secrets.CLOUDOPS_AKV }}"
+          akvAuth: "${{ secrets.CLOUDOPS_AKVAUTH }}"
+
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔎 Check for package-lock.json
+        id: lockfile-check
+        run: |
+          if [ -f "${{ env.workingDirectory }}/package-lock.json" ]; then
+            echo "has_lockfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_lockfile=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🟢 Set up Node.js (with cache)
+        if: steps.lockfile-check.outputs.has_lockfile == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.nodeVersion }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.workingDirectory }}/package-lock.json
+
+      - name: 🟢 Set up Node.js
+        if: steps.lockfile-check.outputs.has_lockfile != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.nodeVersion }}
+
+      - name: 📦 Install App Dependencies (ci)
+        if: steps.lockfile-check.outputs.has_lockfile == 'true'
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          npm ci
+
+      - name: 📦 Install App Dependencies
+        if: steps.lockfile-check.outputs.has_lockfile != 'true'
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          npm install
+
+      - name: 🏗️ Build Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          # Build TypeScript if tsconfig.json exists
+          if [ -f "tsconfig.json" ]; then
+            echo "📝 TypeScript configuration detected, building..."
+            npm run build
+          fi
+
+          # Run any custom build scripts if defined in package.json
+          if npm run | grep -q "build:prod"; then
+            npm run build:prod
+          elif npm run | grep -q "build" && [ ! -f "tsconfig.json" ]; then
+            npm run build
+          fi
+
+      - name: 📦 Install Azure Functions Core Tools
+        run: |
+          npm install -g azure-functions-core-tools@4 --unsafe-perm true
+
+      - name: 🔧 Configure Function App Settings
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          # Ensure host.json exists with proper Node.js settings
+          if [ ! -f "host.json" ]; then
+            echo '{
+              "version": "2.0",
+              "logging": {
+                "applicationInsights": {
+                  "samplingSettings": {
+                    "isEnabled": true,
+                    "excludedTypes": "Request"
+                  }
+                }
+              },
+              "extensionBundle": {
+                "id": "Microsoft.Azure.Functions.ExtensionBundle",
+                "version": "[3.*, 4.0.0)"
+              }
+            }' > host.json
+          fi
+
+      # 🚀 Deploy to Azure Function App (test)
+      - name: 🚀 Deploy to Azure Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          func azure functionapp publish func-${{ env.appName }}-${{ env.appRegion }}-test-1 --node
+
+      # 📝 Add deployment result to summary
+      - name: 📝 Add Deployment Success to Summary
+        run: |
+          echo "### 🚀 Deployment successful" >> $GITHUB_STEP_SUMMARY
+          echo "App: \`${{ env.appName }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Region: \`${{ env.appRegion }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Node.js Version: \`${{ env.nodeVersion }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Function URL: \`https://func-${{ env.appName }}-${{ env.appRegion }}-dev.azurewebsites.net\`" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed at: $(date -u)" >> $GITHUB_STEP_SUMMARY
