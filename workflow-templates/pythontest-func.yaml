@@ -115,16 +115,68 @@ jobs:
           # Don't fail the job; we'll gate deploy based on black_failed
           exit 0
 
-  BuildAndDeploy:
+  Deploy_NoPythonChanges:
+    name: Deploy to Azure Function (Test)
+    needs: [DetectPythonChanges]
+    # Deploy if:
+    #  - No Python changes, OR
+    if: needs.DetectPythonChanges.outputs.python_changed == 'false'
+    runs-on: ubuntu-latest
+    env:
+      workingDirectory: # Add name of directory with code here, e.g. repo_guardian
+
+    steps:
+      - name: 🔐 Setup Azure Test Release Credentials
+        uses: Advent-International/cloudengineering-actions/release_auth_test@main
+        with:
+          subscription: "${{ env.appSubscription }}"
+          akvName: "${{ secrets.CLOUDOPS_AKV }}"
+          akvAuth: "${{ secrets.CLOUDOPS_AKVAUTH }}"
+
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install App Dependencies
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📦 Zip Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          zip -r ${{ github.run_id }}.zip .
+
+      # 🚀 Deploy to Azure Function App (Dev)
+      - name: 🚀 Deploy to Azure Function App
+        working-directory: ${{ env.workingDirectory }}
+        run: |
+          az functionapp deployment source config-zip \
+            -g rg-${{ env.appName }}-${{ env.appRegion }} \
+            -n func-${{ env.appName }}-${{ env.appRegion }}-dev-1 \
+            --src ${{ github.run_id }}.zip
+
+      # 📝 Add deployment result to summary
+      - name: 📝 Add Deployment Success to Summary
+        run: |
+          echo "### 🚀 Deployment successful" >> $GITHUB_STEP_SUMMARY
+          echo "App: \`${{ env.appName }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Region: \`${{ env.appRegion }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed at: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  Deploy_PythonChanges:
     name: Deploy to Azure Function (Test)
     needs: [DetectPythonChanges, PythonFormatting]
     # Deploy if:
-    #  - No Python changes, OR
     #  - Python changes AND Black passed (black_failed == 'false')
     if: |
-      needs.DetectPythonChanges.outputs.python_changed == 'false' ||
-      (needs.DetectPythonChanges.outputs.python_changed == 'true' &&
-       needs.PythonFormatting.outputs.black_failed == 'false')
+      needs.DetectPythonChanges.outputs.python_changed == 'true' &&
+      needs.PythonFormatting.outputs.black_failed == 'false'
     runs-on: ubuntu-latest
     env:
       workingDirectory: # Add name of directory with code here, e.g. repo_guardian
